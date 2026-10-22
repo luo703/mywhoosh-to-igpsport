@@ -1,0 +1,7 @@
+{
+  "retrieved_on": "2026-10-19",
+  "source": "https://app.igpsport.cn/assets/edge_core_wasm_bg-GHC38n8Q.wasm",
+  "sha256": "7b9d7936b75afc21d0cca11a3eddddea09ecdd782c6064dd1f65d6e674313bfb",
+  "size": 151263,
+  "purpose": "Execute the signature ABI used by the public China website client. No user credentials are included."
+}
