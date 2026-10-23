@@ -15,6 +15,8 @@ pub struct Job {
     pub expected_start: Option<String>,
     pub max_speed: Option<f64>,
     pub power_metrics: Option<String>,
+    pub analysis: Option<String>,
+    pub analysis_version: i64,
     pub compat_version: i64,
 }
 pub struct Db {
@@ -56,6 +58,8 @@ impl Db {
             ("expected_start", "TEXT"),
             ("max_speed", "REAL"),
             ("power_metrics", "TEXT"),
+            ("analysis", "TEXT"),
+            ("analysis_version", "INTEGER DEFAULT 0"),
         ] {
             if !columns.iter().any(|c| c == name) {
                 db.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {name} {kind}"))?;
@@ -64,16 +68,16 @@ impl Db {
         Ok(Self { db })
     }
     pub fn get(&self, scope: &str, id: &str) -> Result<Option<Job>> {
-        Ok(self.db.query_row("SELECT scope,activity_id,status,filename,sha256,oss_id,ride_id,expected_start,max_speed,power_metrics,compat_version FROM jobs WHERE scope=? AND activity_id=?",params![scope,id],|r|Ok(Job {
-            scope:r.get(0)?,activity_id:r.get(1)?,status:r.get(2)?,filename:r.get(3)?,sha256:r.get(4)?,oss_id:r.get(5)?,ride_id:r.get(6)?,expected_start:r.get(7)?,max_speed:r.get(8)?,power_metrics:r.get(9)?,compat_version:r.get::<_,Option<i64>>(10)?.unwrap_or(0)
+        Ok(self.db.query_row("SELECT scope,activity_id,status,filename,sha256,oss_id,ride_id,expected_start,max_speed,power_metrics,compat_version,analysis,analysis_version FROM jobs WHERE scope=? AND activity_id=?",params![scope,id],|r|Ok(Job {
+            scope:r.get(0)?,activity_id:r.get(1)?,status:r.get(2)?,filename:r.get(3)?,sha256:r.get(4)?,oss_id:r.get(5)?,ride_id:r.get(6)?,expected_start:r.get(7)?,max_speed:r.get(8)?,power_metrics:r.get(9)?,compat_version:r.get::<_,Option<i64>>(10)?.unwrap_or(0),analysis:r.get(11)?,analysis_version:r.get::<_,Option<i64>>(12)?.unwrap_or(0)
         })).optional()?)
     }
     pub fn save(&self, j: &Job) -> Result<()> {
-        self.db.execute("INSERT INTO jobs(scope,activity_id,status,filename,sha256,oss_id,ride_id,expected_start,max_speed,power_metrics,compat_version)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,activity_id) DO UPDATE SET status=excluded.status,filename=excluded.filename,
+        self.db.execute("INSERT INTO jobs(scope,activity_id,status,filename,sha256,oss_id,ride_id,expected_start,max_speed,power_metrics,compat_version,analysis,analysis_version)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,activity_id) DO UPDATE SET status=excluded.status,filename=excluded.filename,
             sha256=excluded.sha256,oss_id=excluded.oss_id,ride_id=excluded.ride_id,expected_start=excluded.expected_start,
-            max_speed=excluded.max_speed,power_metrics=excluded.power_metrics,compat_version=excluded.compat_version,error=NULL,updated_at=CURRENT_TIMESTAMP",
-            params![j.scope,j.activity_id,j.status,j.filename,j.sha256,j.oss_id,j.ride_id,j.expected_start,j.max_speed,j.power_metrics,j.compat_version])?;
+            max_speed=excluded.max_speed,power_metrics=excluded.power_metrics,compat_version=excluded.compat_version,analysis=excluded.analysis,analysis_version=excluded.analysis_version,error=NULL,updated_at=CURRENT_TIMESTAMP",
+            params![j.scope,j.activity_id,j.status,j.filename,j.sha256,j.oss_id,j.ride_id,j.expected_start,j.max_speed,j.power_metrics,j.compat_version,j.analysis,j.analysis_version])?;
         Ok(())
     }
     pub fn duplicate(&self, scope: &str, id: &str, hash: &str) -> Result<bool> {
@@ -250,10 +254,17 @@ mod tests {
             activity_id: "id".into(),
             status: "submitting".into(),
             filename: "a.fit".into(),
+            analysis: Some("本次运动分析".into()),
+            analysis_version: crate::ai::VERSION,
             ..Job::default()
         };
         db.save(&j).unwrap();
         assert_eq!(db.get("pair", "id").unwrap().unwrap().status, "submitting");
+        assert_eq!(db.get("pair", "id").unwrap().unwrap().analysis, j.analysis);
+        assert_eq!(
+            db.get("pair", "id").unwrap().unwrap().analysis_version,
+            crate::ai::VERSION
+        );
         drop(db);
         let _ = std::fs::remove_file(path);
     }

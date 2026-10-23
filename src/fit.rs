@@ -246,6 +246,112 @@ pub struct Summary {
     pub ascent: f64,
 }
 
+pub fn analysis_data(raw: &[u8], report: &Report, source_title: &str) -> Result<serde_json::Value> {
+    let summary = summary(raw)?;
+    let frames = parse(raw)?;
+    let session = frames
+        .iter()
+        .find_map(|f| match f {
+            Frame::Data(m) if m.def.global == 18 => Some(m),
+            _ => None,
+        })
+        .context("FIT 缺少 session")?;
+    let records: Vec<_> = frames
+        .iter()
+        .filter_map(|f| match f {
+            Frame::Data(m) if m.def.global == 20 => Some(m),
+            _ => None,
+        })
+        .collect();
+    let powers: Vec<_> = records.iter().map(|m| m.number(7)).collect();
+    let mut zones = [0u64; 7];
+    let mut sum = 0u64;
+    let mut valid = 0u64;
+    for power in powers.iter().flatten() {
+        let ratio = *power as f64 / report.threshold_power as f64;
+        let zone = [0.55, 0.75, 0.90, 1.05, 1.20, 1.50]
+            .iter()
+            .position(|limit| ratio <= *limit)
+            .unwrap_or(6);
+        zones[zone] += 1;
+        sum += power;
+        valid += 1;
+    }
+    let average = (valid > 0).then(|| sum as f64 / valid as f64);
+    let best: serde_json::Map<String, serde_json::Value> = [5usize, 30, 60, 300, 1200]
+        .into_iter()
+        .map(|window| {
+            (
+                format!("{window}s"),
+                serde_json::json!(best_power(&powers, window)),
+            )
+        })
+        .collect();
+    let first = records.first().and_then(|m| m.number(253)).unwrap_or(0);
+    let samples: Vec<_> = if records.len() <= 3600 {
+        records
+            .iter()
+            .map(|m| {
+                serde_json::json!([
+                    m.number(253).map(|t| t.saturating_sub(first)),
+                    m.number(7),
+                    m.number(3),
+                    m.number(4)
+                ])
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let blocks: Vec<_> = records.chunks(30).enumerate().map(|(index, chunk)| {
+        let stats = |field| {
+            let values: Vec<_> = chunk.iter().filter_map(|m| m.number(field)).collect();
+            serde_json::json!({"valid_seconds":values.len(), "mean":(!values.is_empty()).then(|| values.iter().sum::<u64>() as f64 / values.len() as f64),
+                "min":values.iter().min(), "max":values.iter().max()})
+        };
+        serde_json::json!({"offset_seconds":index * 30, "duration_seconds":chunk.len(),
+            "power_w":stats(7), "heart_rate_bpm":stats(3), "cadence_rpm":stats(4)})
+    }).collect();
+    Ok(serde_json::json!({
+        "mywhoosh_title":source_title,
+        "sport": "室内虚拟骑行", "duration_seconds": summary.seconds,
+        "distance_km": summary.distance / 1000.0, "total_ascent_m": summary.ascent,
+        "avg_power_w": session.number(20), "max_power_w": session.number(21),
+        "avg_heart_rate_bpm": session.number(16), "max_heart_rate_bpm": session.number(17),
+        "avg_cadence_rpm": session.number(18), "max_cadence_rpm": session.number(19),
+        "max_speed_kmh": report.max_speed_mps * 3.6,
+        "normalized_power_w": report.normalized_power, "ftp_w": report.threshold_power,
+        "intensity_factor": report.intensity_factor, "training_stress_score": report.training_stress_score,
+        "ftp_note": "FTP 为当前个人资料值，未必是运动发生时的 FTP",
+        "power_zone_seconds": zones,
+        "power_zone_definitions": ["Z1 <=55% FTP", "Z2 >55-75%", "Z3 >75-90%", "Z4 >90-105%", "Z5 >105-120%", "Z6 >120-150%", "Z7 >150%"],
+        "valid_power_seconds":valid, "sample_avg_power_w":average,
+        "variability_index":average.filter(|v| *v > 0.0).map(|v| report.normalized_power as f64 / v),
+        "best_mean_power_w":best,
+        "sample_columns":["offset_seconds","power_w","heart_rate_bpm","cadence_rpm"],
+        "sample_rows":samples,
+        "blocks_30_seconds":if records.len() > 3600 { blocks } else { Vec::new() },
+        "sampling_note":"连续每秒记录；不超过1小时发送全部逐秒数据，超过1小时发送覆盖全程的30秒统计块；功率区间及最佳持续功率始终从完整逐秒数据计算"
+    }))
+}
+
+fn best_power(powers: &[Option<u64>], window: usize) -> Option<f64> {
+    let (mut sum, mut missing) = (0u64, 0usize);
+    let mut best = None;
+    for (index, power) in powers.iter().enumerate() {
+        sum += power.unwrap_or(0);
+        missing += usize::from(power.is_none());
+        if index >= window {
+            sum -= powers[index - window].unwrap_or(0);
+            missing -= usize::from(powers[index - window].is_none());
+        }
+        if index + 1 >= window && missing == 0 {
+            best = Some(best.unwrap_or(0.0f64).max(sum as f64 / window as f64));
+        }
+    }
+    best
+}
+
 pub fn summary(raw: &[u8]) -> Result<Summary> {
     let start = start(raw)?;
     let frames = parse(raw)?;
@@ -488,6 +594,28 @@ mod tests {
         assert_eq!(report.training_stress_score, 64.0);
         assert_eq!(report.max_speed_mps, 8.394);
         assert_eq!(report.expected_start, "2026-10-18 20:12:05");
+        let data = analysis_data(&original, &report, "MyWhoosh - Zone 2 Steady State").unwrap();
+        assert_eq!(data["mywhoosh_title"], "MyWhoosh - Zone 2 Steady State");
+        assert_eq!(data["ftp_w"], 250);
+        assert_eq!(data["normalized_power_w"], 200);
+        assert_eq!(data["duration_seconds"], 3600.0);
+        assert_eq!(
+            data["power_zone_seconds"],
+            serde_json::json!([0, 0, 3600, 0, 0, 0, 0])
+        );
+        assert_eq!(data["best_mean_power_w"]["1200s"], 200.0);
+        assert_eq!(data["sample_rows"].as_array().unwrap().len(), 3600);
+        assert_eq!(data["sample_rows"][0][1], 200);
+        let long = fixture(&vec![200; 3601], 3601);
+        let (_, long_report) = prepare(&long, chrono_tz::UTC, 250.0).unwrap();
+        let long_data = analysis_data(&long, &long_report, "").unwrap();
+        assert!(long_data["sample_rows"].as_array().unwrap().is_empty());
+        let blocks = long_data["blocks_30_seconds"].as_array().unwrap();
+        assert_eq!(blocks.len(), 121);
+        assert_eq!(blocks[120]["duration_seconds"], 1);
+        assert_eq!(blocks[120]["power_w"]["mean"], 200.0);
+        assert!(data.get("start").is_none());
+        assert!(data.get("coordinates").is_none());
         validate(&fixed).unwrap();
         let parsed = parse(&fixed).unwrap();
         let session = parsed
@@ -505,6 +633,11 @@ mod tests {
     }
     #[test]
     fn zero_power_and_complete_windows() {
+        assert_eq!(
+            best_power(&[Some(100), None, Some(300), Some(400)], 2),
+            Some(350.0)
+        );
+        assert_eq!(best_power(&[Some(100), None], 2), None);
         let mut powers = vec![300; 31];
         powers[0] = 0;
         let (_, r) = prepare(&fixture(&powers, 31), chrono_tz::UTC, 250.0).unwrap();

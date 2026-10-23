@@ -1,3 +1,4 @@
+mod ai;
 mod cli;
 mod db;
 mod fit;
@@ -57,6 +58,7 @@ fn run() -> Result<bool> {
     }
     let mut target_connected = false;
     loop {
+        ai::begin_cycle();
         let result = (|| -> Result<sync::Counts> {
             if args.command == Command::Run {
                 // Refresh FTP from the current profile for every polling cycle.
@@ -76,6 +78,9 @@ fn run() -> Result<bool> {
             }
             sync::once(&args, &directory, &mut source, &mut target, &db, rows)
         })();
+        if args.deepseek_key.is_some() {
+            ai::print_usage();
+        }
         if args.command == Command::Once {
             return Ok(result?.failed());
         }

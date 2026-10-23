@@ -352,4 +352,12 @@ impl Target {
         )?;
         Ok(())
     }
+    pub fn describe(&mut self, id: &str, description: &str) -> Result<()> {
+        self.api(
+            Method::PUT,
+            &format!("{ACT}update"),
+            Some(json!({"rideId":id,"desc":description})),
+        )?;
+        Ok(())
+    }
 }

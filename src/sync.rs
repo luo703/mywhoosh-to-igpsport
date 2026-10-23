@@ -230,6 +230,16 @@ fn finish(
             "活动名称修改尚未确认"
         );
     }
+    if let Some(analysis) = &job.analysis {
+        if detail["desc"].as_str() != Some(analysis.as_str()) {
+            println!("  正在将 AI 分析写入活动说明……");
+            target.describe(&id, analysis)?;
+            ensure!(
+                target.detail(&id)?["desc"].as_str() == Some(analysis.as_str()),
+                "AI 分析说明写入尚未确认"
+            );
+        }
+    }
     job.status = "confirmed".into();
     db.save(job)?;
     println!("  同步完成：数据和活动名称已确认（iGPSPORT 活动 {id}）。");
@@ -431,7 +441,12 @@ pub fn once(
             Ok((cache, key))
         })();
         match prepared {
-            Ok((cache, key)) => candidates.push((job, cache, key)),
+            Ok((cache, key)) => candidates.push((
+                job,
+                cache,
+                key,
+                row["title"].as_str().unwrap_or_default().to_owned(),
+            )),
             Err(error) => {
                 counts.errors += 1;
                 eprintln!("读取 FIT 失败 {activity_id}：{error}");
@@ -440,8 +455,8 @@ pub fn once(
     }
     // A FIT can disagree with the list date. Expand the index before any upload.
     if let (Some(first), Some(last)) = (
-        candidates.iter().map(|(_, _, key)| key.date).min(),
-        candidates.iter().map(|(_, _, key)| key.date).max(),
+        candidates.iter().map(|(_, _, key, _)| key.date).min(),
+        candidates.iter().map(|(_, _, key, _)| key.date).max(),
     ) {
         let begin = queried_range.map_or(first, |(begin, _)| begin.min(first));
         let end = queried_range.map_or_else(
@@ -460,7 +475,7 @@ pub fn once(
     }
     let mut processed = 0;
     let candidate_total = candidates.len();
-    for (index, (mut job, cache, key)) in candidates.into_iter().enumerate() {
+    for (index, (mut job, cache, key, source_title)) in candidates.into_iter().enumerate() {
         if args.limit.is_some_and(|n| processed >= n) {
             println!("已达到本轮处理数量上限，结束扫描。");
             break;
@@ -483,6 +498,13 @@ pub fn once(
             println!("  远端未发现四项数据匹配的重复记录。");
             processed += 1;
             if args.dry_run {
+                if let Some(api_key) = &args.deepseek_key {
+                    let raw = std::fs::read(&cache)?;
+                    let (_, report) = fit::prepare(&raw, args.timezone, source.ftp)?;
+                    let data = fit::analysis_data(&raw, &report, &source_title)?;
+                    let analysis = crate::ai::analyze(api_key, &data, args.timeout)?;
+                    println!("  运动说明预览：{analysis}");
+                }
                 println!("  预演通过：计划上传该活动，本次未执行上传。");
                 counts.planned += 1;
                 times.push((key, format!("本轮预演:{activity_id}")));
@@ -512,6 +534,19 @@ pub fn once(
                 report.max_speed_mps * 3.6
             );
             let metrics = serde_json::to_string(&report)?;
+            if let Some(api_key) = &args.deepseek_key {
+                if job.analysis.is_none()
+                    || job.analysis_version != crate::ai::VERSION
+                    || job.sha256.as_ref() != Some(&hash)
+                    || job.power_metrics.as_ref() != Some(&metrics)
+                {
+                    let data = fit::analysis_data(&raw, &report, &source_title)?;
+                    job.analysis = Some(crate::ai::analyze(api_key, &data, args.timeout)?);
+                    job.analysis_version = crate::ai::VERSION;
+                } else {
+                    println!("  复用已保存的 AI 运动分析。");
+                }
+            }
             let reuse = !args.resync
                 && job.status == "uploaded"
                 && job.compat_version == fit::VERSION

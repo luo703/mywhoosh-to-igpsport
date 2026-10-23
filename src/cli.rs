@@ -38,12 +38,14 @@ pub enum Command {
   iGPSPORT 中已有相同活动时会跳过；新活动才会下载 FIT 并继续同步。
   --resync 强制重新检查 MyWhoosh 活动，并仍检查 iGPSPORT 是否已有重复记录。
   --dry-run 预演同步，不上传文件。
+  --deepseek-key 启用 AI 运动分析，自动填写新活动的说明。
 
 示例：
   mywhoosh-to-igpsport
   mywhoosh-to-igpsport check
   mywhoosh-to-igpsport once --dry-run
   mywhoosh-to-igpsport once --limit 1
+  mywhoosh-to-igpsport once --deepseek-key '你的 API Key'
   mywhoosh-to-igpsport once --resync --dry-run
   mywhoosh-to-igpsport once --since 2026-10-01
   mywhoosh-to-igpsport run --interval 900
@@ -57,11 +59,7 @@ pub struct Args {
         help = "运行方式，详见下方命令说明"
     )]
     pub command: Command,
-    #[arg(
-        long = "myid",
-        value_name = "账号",
-        help = "MyWhoosh 账号"
-    )]
+    #[arg(long = "myid", value_name = "账号", help = "MyWhoosh 账号")]
     pub mywhoosh_username: Option<String>,
     #[arg(
         long = "mypw",
@@ -70,11 +68,7 @@ pub struct Args {
         help = "MyWhoosh 密码；不会保存在本地"
     )]
     pub mywhoosh_password: Option<String>,
-    #[arg(
-        long = "igpid",
-        value_name = "账号",
-        help = "iGPSPORT 中国站账号"
-    )]
+    #[arg(long = "igpid", value_name = "账号", help = "iGPSPORT 中国站账号")]
     pub igpsport_username: Option<String>,
     #[arg(
         long = "igppw",
@@ -83,6 +77,12 @@ pub struct Args {
         help = "iGPSPORT 密码；不会保存在本地"
     )]
     pub igpsport_password: Option<String>,
+    #[arg(
+        long,
+        value_name = "KEY",
+        help = "启用 DeepSeek 运动分析，写入新活动的说明；密钥不保存"
+    )]
+    pub deepseek_key: Option<Zeroizing<String>>,
     #[arg(
         long,
         value_name = "目录",
