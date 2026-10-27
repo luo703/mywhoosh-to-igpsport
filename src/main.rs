@@ -2,6 +2,7 @@ mod ai;
 mod cli;
 mod db;
 mod fit;
+mod history;
 mod net;
 mod sign;
 mod source;

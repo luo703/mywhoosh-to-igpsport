@@ -278,7 +278,7 @@ pub fn analysis_data(raw: &[u8], report: &Report, source_title: &str) -> Result<
         valid += 1;
     }
     let average = (valid > 0).then(|| sum as f64 / valid as f64);
-    let best: serde_json::Map<String, serde_json::Value> = [5usize, 30, 60, 300, 1200]
+    let best: serde_json::Map<String, serde_json::Value> = [5usize, 30, 60, 300, 480, 1200, 1800]
         .into_iter()
         .map(|window| {
             (

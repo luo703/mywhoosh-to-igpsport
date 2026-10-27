@@ -39,6 +39,7 @@ pub fn status_label(status: &str) -> &str {
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Connection::open(path)?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS ai_source_history (source_id TEXT NOT NULL, activity_id TEXT NOT NULL, row_json TEXT NOT NULL, PRIMARY KEY(source_id,activity_id));")?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS jobs (
             scope TEXT NOT NULL, activity_id TEXT NOT NULL, status TEXT NOT NULL, filename TEXT NOT NULL,
             sha256 TEXT, oss_id TEXT, ride_id TEXT, error TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -71,6 +72,23 @@ impl Db {
         Ok(self.db.query_row("SELECT scope,activity_id,status,filename,sha256,oss_id,ride_id,expected_start,max_speed,power_metrics,compat_version,analysis,analysis_version FROM jobs WHERE scope=? AND activity_id=?",params![scope,id],|r|Ok(Job {
             scope:r.get(0)?,activity_id:r.get(1)?,status:r.get(2)?,filename:r.get(3)?,sha256:r.get(4)?,oss_id:r.get(5)?,ride_id:r.get(6)?,expected_start:r.get(7)?,max_speed:r.get(8)?,power_metrics:r.get(9)?,compat_version:r.get::<_,Option<i64>>(10)?.unwrap_or(0),analysis:r.get(11)?,analysis_version:r.get::<_,Option<i64>>(12)?.unwrap_or(0)
         })).optional()?)
+    }
+    pub fn remember_activities(&self, source: &str, rows: &[Value]) -> Result<()> {
+        let transaction = self.db.unchecked_transaction()?;
+        for row in rows {
+            if let Some(id) = row["activityId"].as_str() {
+                transaction.execute("INSERT INTO ai_source_history VALUES(?,?,?) ON CONFLICT(source_id,activity_id) DO UPDATE SET row_json=excluded.row_json", params![source,id,serde_json::to_string(row)?])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+    pub fn activity_history(&self, source: &str) -> Result<Vec<Value>> {
+        let mut statement = self
+            .db
+            .prepare("SELECT row_json FROM ai_source_history WHERE source_id=?")?;
+        let rows = statement.query_map([source], |r| r.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
     pub fn save(&self, j: &Job) -> Result<()> {
         self.db.execute("INSERT INTO jobs(scope,activity_id,status,filename,sha256,oss_id,ride_id,expected_start,max_speed,power_metrics,compat_version,analysis,analysis_version)
@@ -249,6 +267,21 @@ mod tests {
     fn round_trip_job_without_credentials() {
         let path = std::env::temp_dir().join(format!("mw-{}.sqlite3", uuid::Uuid::new_v4()));
         let db = Db::open(&path).unwrap();
+        db.remember_activities(
+            "one",
+            &[serde_json::json!({"activityId":"a","distance":10})],
+        )
+        .unwrap();
+        db.remember_activities(
+            "one",
+            &[serde_json::json!({"activityId":"a","distance":20})],
+        )
+        .unwrap();
+        assert_eq!(
+            db.activity_history("one").unwrap(),
+            vec![serde_json::json!({"activityId":"a","distance":20})]
+        );
+        assert!(db.activity_history("two").unwrap().is_empty());
         let j = Job {
             scope: "pair".into(),
             activity_id: "id".into(),

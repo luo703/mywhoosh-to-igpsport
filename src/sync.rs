@@ -253,6 +253,9 @@ pub fn activities_for_cycle(
 ) -> Result<Vec<serde_json::Value>> {
     let rows = source.activities(args.max_pages, args.since)?;
     let source_key = storage::hash(&source.id);
+    if !args.dry_run {
+        db.remember_activities(&source_key, &rows)?;
+    }
     let rows = if args.resync {
         if !args.dry_run {
             db.queue_source_rows(&source_key, rows.clone(), false)?;
@@ -475,6 +478,17 @@ pub fn once(
     }
     let mut processed = 0;
     let candidate_total = candidates.len();
+    let history = if args.deepseek_key.is_some() && candidate_total > 0 {
+        Some(crate::history::History::load(
+            db,
+            &source_key,
+            &data_dir.join("fit").join(&scope),
+            source.ftp,
+            args.timezone,
+        )?)
+    } else {
+        None
+    };
     for (index, (mut job, cache, key, source_title)) in candidates.into_iter().enumerate() {
         if args.limit.is_some_and(|n| processed >= n) {
             println!("已达到本轮处理数量上限，结束扫描。");
@@ -501,7 +515,10 @@ pub fn once(
                 if let Some(api_key) = &args.deepseek_key {
                     let raw = std::fs::read(&cache)?;
                     let (_, report) = fit::prepare(&raw, args.timezone, source.ftp)?;
-                    let data = fit::analysis_data(&raw, &report, &source_title)?;
+                    let mut data = fit::analysis_data(&raw, &report, &source_title)?;
+                    if let Some(history) = &history {
+                        data["history"] = history.context(&data, fit::start(&raw)?);
+                    }
                     let analysis = crate::ai::analyze(api_key, &data, args.timeout)?;
                     println!("  运动说明预览：{analysis}");
                 }
@@ -540,7 +557,10 @@ pub fn once(
                     || job.sha256.as_ref() != Some(&hash)
                     || job.power_metrics.as_ref() != Some(&metrics)
                 {
-                    let data = fit::analysis_data(&raw, &report, &source_title)?;
+                    let mut data = fit::analysis_data(&raw, &report, &source_title)?;
+                    if let Some(history) = &history {
+                        data["history"] = history.context(&data, fit::start(&raw)?);
+                    }
                     job.analysis = Some(crate::ai::analyze(api_key, &data, args.timeout)?);
                     job.analysis_version = crate::ai::VERSION;
                 } else {
