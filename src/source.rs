@@ -225,8 +225,7 @@ impl Source {
         for attempt in 0..2 {
             let response = self
                 .http
-                .send(
-                    Method::POST,
+                .send_readonly_post(
                     "https://service14.mywhoosh.com/v2/rider/profile/activities",
                     &self.headers(),
                     Some(serde_json::to_vec(

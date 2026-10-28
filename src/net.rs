@@ -51,7 +51,25 @@ impl Http {
         headers: &[(&str, String)],
         body: Option<Vec<u8>>,
     ) -> Result<Response> {
-        let safe = method == Method::GET || method == Method::PUT;
+        self.send_with_retry(method, url, headers, body, false)
+    }
+    pub fn send_readonly_post(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        body: Option<Vec<u8>>,
+    ) -> Result<Response> {
+        self.send_with_retry(Method::POST, url, headers, body, true)
+    }
+    fn send_with_retry(
+        &self,
+        method: Method,
+        url: &str,
+        headers: &[(&str, String)],
+        body: Option<Vec<u8>>,
+        readonly: bool,
+    ) -> Result<Response> {
+        let safe = readonly || method == Method::GET || method == Method::PUT;
         for attempt in 0..=self.retries {
             let mut request = self.client.request(method.clone(), url);
             for (key, value) in headers {
@@ -114,5 +132,54 @@ pub fn text(value: &Value, key: &str) -> Result<String> {
         Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
         Some(Value::Number(n)) => Ok(n.to_string()),
         _ => bail!("接口缺少有效 {key}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    #[test]
+    fn readonly_post_retries_503_but_mutating_post_does_not() {
+        for readonly in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                for index in 0..if readonly { 2 } else { 1 } {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut buf = [0; 4096];
+                    assert!(socket.read(&mut buf).unwrap() > 0);
+                    let status = if index == 0 {
+                        "503 Service Unavailable"
+                    } else {
+                        "200 OK"
+                    };
+                    write!(
+                        socket,
+                        "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                    )
+                    .unwrap();
+                }
+            });
+            let http = Http {
+                client: Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap(),
+                retries: 1,
+            };
+            let response = if readonly {
+                http.send_readonly_post(&url, &[], None)
+            } else {
+                http.send(Method::POST, &url, &[], None)
+            }
+            .unwrap();
+            assert_eq!(response.status().as_u16(), if readonly { 200 } else { 503 });
+            server.join().unwrap();
+        }
     }
 }

@@ -246,6 +246,39 @@ fn finish(
     Ok(true)
 }
 
+fn wait_confirmation(
+    target: &mut Target,
+    db: &Db,
+    job: &mut Job,
+    args: &Args,
+) -> Result<Option<bool>> {
+    let began = Instant::now();
+    let timeout = std::time::Duration::from_secs(args.confirm_timeout);
+    loop {
+        let result = match reconcile(target, job) {
+            Ok(Some((id, valid))) => finish(target, db, job, id, valid, args).map(Some),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(Some(valid)) => return Ok(Some(valid)),
+            Err(error) => println!("  本次核验尚未完成：{error}"),
+            Ok(None) => {}
+        }
+        if began.elapsed() >= timeout {
+            println!("  已达到本轮确认等待时长，进度已保留，下轮继续核对，不重复提交 FIT。");
+            return Ok(None);
+        }
+        let delay = std::time::Duration::from_secs(5).min(timeout.saturating_sub(began.elapsed()));
+        println!(
+            "  正在等待 iGPSPORT 完成导入或更新，{} 秒后重新确认（已等待 {} 秒）……",
+            delay.as_secs(),
+            began.elapsed().as_secs()
+        );
+        std::thread::sleep(delay);
+    }
+}
+
 pub fn activities_for_cycle(
     args: &Args,
     source: &mut Source,
@@ -375,15 +408,9 @@ pub fn once(
                     continue;
                 }
                 println!("  正在核对上次提交的导入结果……");
-                match reconcile(target, &job) {
-                    Ok(Some((id, valid))) => match finish(target, db, &mut job, id, valid, args) {
-                        Ok(true) => counts.confirmed += 1,
-                        Ok(false) => counts.errors += 1,
-                        Err(e) => {
-                            counts.errors += 1;
-                            eprintln!("核对失败 {activity_id}：{e}");
-                        }
-                    },
+                match wait_confirmation(target, db, &mut job, args) {
+                    Ok(Some(true)) => counts.confirmed += 1,
+                    Ok(Some(false)) => counts.errors += 1,
                     Ok(None) => {
                         counts.uncertain += 1;
                         println!("待核对，不重传：{activity_id}");
@@ -600,17 +627,16 @@ pub fn once(
                 job.status = "uncertain".into();
                 db.save(&job)?;
                 counts.uncertain += 1;
-                println!("  提交结果不确定，已保存待核对状态，下次将先核对导入结果。");
-                times.push((key, format!("本轮待核对:{activity_id}")));
-                return Err(error);
+                println!("  提交响应不确定：{error}；现在开始核对导入结果，不重复提交。");
+            } else {
+                job.status = "submitted".into();
+                db.save(&job)?;
+                counts.submitted += 1;
             }
-            job.status = "submitted".into();
-            db.save(&job)?;
-            counts.submitted += 1;
             times.push((key, format!("本轮提交:{activity_id}")));
             println!("  导入任务已提交，正在查询处理结果……");
-            if let Some((id, valid)) = reconcile(target, &job)? {
-                if finish(target, db, &mut job, id, valid, args)? {
+            if let Some(valid) = wait_confirmation(target, db, &mut job, args)? {
+                if valid {
                     counts.confirmed += 1;
                 } else {
                     counts.errors += 1;

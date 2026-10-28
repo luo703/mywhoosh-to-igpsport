@@ -117,6 +117,8 @@ pub struct Args {
     pub timeout: u64,
     #[arg(long, default_value_t = 3, value_name = "次数", help = "可重试请求的重试次数，范围 0–5", value_parser = clap::value_parser!(u8).range(0..=5))]
     pub retries: u8,
+    #[arg(long, default_value_t = 120, value_name = "秒", help = "上传后等待导入、标题和说明确认的时长，范围 5–600 秒", value_parser = clap::value_parser!(u64).range(5..=600))]
+    pub confirm_timeout: u64,
     #[arg(long, default_value_t = 1000, value_name = "页数", help = "每轮最多读取的活动列表页数，至少 1", value_parser = clap::value_parser!(u32).range(1..))]
     pub max_pages: u32,
     #[arg(long, value_name = "条数", help = "每轮最多处理的活动数，至少 1", value_parser = clap::value_parser!(u32).range(1..))]

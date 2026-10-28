@@ -253,7 +253,15 @@ impl Target {
         }
         for attempt in 0..2 {
             match self.signed(method.clone(), path, body.clone(), true) {
-                Err(e) if attempt == 0 && net::unauthorized(&e) => self.login()?,
+                Err(e)
+                    if attempt == 0
+                        && (net::unauthorized(&e)
+                            || e.downcast_ref::<ApiFailure>()
+                                .is_some_and(|e| e.status == 403 || e.code == Some(403))) =>
+                {
+                    println!("iGPSPORT 登录凭证失效或被拒绝，正在重新登录……");
+                    self.login()?;
+                }
                 other => return other,
             }
         }
